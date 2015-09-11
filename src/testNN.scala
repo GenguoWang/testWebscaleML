@@ -23,9 +23,11 @@ class DataSet
   var data:Array[BDM[Double]] = null
   var label:Array[Int] = null
   var size:Int = 0
+  var maxLabel:Int = 0
 }
 
 object testNN {
+  type Tensor3D = Array[BDM[Double]]
 
    def loadData(
                             sc: SparkContext,
@@ -102,6 +104,20 @@ object testNN {
     (training, test)
   }
 
+  def maxIndex(data:BDM[Double]):Int = {
+    var index = 0
+    var maxVal = data(0,0)
+    for(j<-1 to data.cols-1)
+    {
+      if(data(0,j) > maxVal)
+      {
+        maxVal = data(0,j)
+        index = j
+      }
+    }
+    index
+  }
+
   def main(args:Array[String]): Unit =
   {
     println("hello test")
@@ -112,10 +128,10 @@ object testNN {
 
 
     // Load training and test data and cache it.
-    val inputFile: String = "/home/kingo/Workshop/spark-1.4.1-bin-hadoop2.4/data/mllib/sample_libsvm_data.txt"
+    val inputFile: String = "/home/kingo/Workshop/spark-1.4.1-bin-hadoop2.4/data/mllib/sample_multiclass_classification_data.txt"//sample_libsvm_data.txt"
     val testInput: String = ""
     val dataFormat: String = "libsvm"
-    val maxIter: Int = 50
+    val maxIter: Int = 5000
     val fracTest: Double = 0.3
 
     //val test: RDD[LabeledPoint] = MLUtils.loadLibSVMFile(sc,input).toDF()
@@ -129,64 +145,70 @@ object testNN {
     val inputN = testDs.data(0).cols
     println("inputN", inputN)
     val hiddenN = inputN/2
-    val outputN = 2
     val batchN = 1
+    val classN = max(trainDs.maxLabel,testDs.maxLabel)+1
+    val outputN = classN
 
     //create model
     val mlp = new Sequential
     mlp.add(new Linear(inputN, hiddenN))
-    mlp.add(new Tanh)
+    mlp.add(new Tanh())
     mlp.add(new Linear(hiddenN,outputN))
-    val mse = new MSECriterion
+    mlp.add(new LogSoftMax())
+    //val mse = new MSECriterion
+    val nll = new ClassNLLCriterion()
 
     val input = new Array[BDM[Double]](1)
     input(0) = new BDM[Double](batchN,inputN)
     val res = new Array[BDM[Double]](1)
     res(0) = new BDM[Double](batchN,outputN)
-    var j=0
     var err = 0.0
-    while(j<maxIter)
+    var accuracyTrain = 0.0
+    var accuracyTest = 0.0
+    for(j<-0 to maxIter-1)
     {
       println("iter " +j +": ")
-      var i = 0
       var yCnt = 0
 
       var startTime = System.nanoTime()
-      while(i < trainDs.size)
+      for(i <- 0 to trainDs.size-1)
       {
         input(0) = trainDs.data(i)
         val label = trainDs.label(i)
+        res(0) *= 0.0
         res(0)(0,label) = 1
-        res(0)(0,1-label) = 0
-        val output = mlp.forward(input)
-        if(output(0)(0,label)>output(0)(0,1-label)) yCnt += 1
-        err = mse.forward(output, res)
-        val grad = mse.backward(output, res)
+        val output = mlp.forward(input).asInstanceOf[Tensor3D]
+        if(maxIndex(output(0)) == label) yCnt += 1
+        //err = mse.forward(output, res)
+        val labelRes = new Array[Double](1)
+        labelRes(0) = label
+        err = nll.forward(output, labelRes)
+        //val grad = mse.backward(output, res).asInstanceOf[Tensor3D]
+        val grad = nll.backward(input,labelRes)
+        mlp.zeroGradParameters()
         mlp.backward(input,grad)
-        mlp.updateParameters(0.001)
-        i += 1
+        mlp.updateParameters(0.01/(j*50/maxIter+1))
       }
       var elapsedTime = (System.nanoTime() - startTime) / 1e9
       println("train err",err)
-      println("train accuracy",1.0*yCnt/trainDs.size)
+      accuracyTrain = 1.0*yCnt/trainDs.size
+      println("train accuracy",accuracyTrain)
       println("train time",elapsedTime)
-      i = 0
       yCnt = 0
       startTime = System.nanoTime()
-      while(i < testDs.size)
+      for(i <- 0 to testDs.size-1)
       {
         input(0) = testDs.data(i)
         val label = testDs.label(i)
-        val output = mlp.forward(input)
-        if(output(0)(0,label)>output(0)(0,1-label)) yCnt += 1
-        i += 1
+        val output = mlp.forward(input).asInstanceOf[Tensor3D]
+        if(maxIndex(output(0)) == label) yCnt += 1
       }
       elapsedTime = (System.nanoTime() - startTime) / 1e9
-      println("test accuracy",1.0*yCnt/testDs.size)
+      accuracyTest = 1.0*yCnt/testDs.size
+      println("test accuracy",accuracyTest)
       println("test time",elapsedTime)
-      j += 1
     }
-
+    assert(accuracyTest>0.85 && accuracyTrain > 0.9)
     println("Tanh Test Passed\n\n")
 
     sc.stop()
@@ -200,13 +222,14 @@ object testNN {
     val dataArray = new Array[BDM[Double]](dataSize)
     val labelArray = new Array[Int](dataSize)
     var i=0
+    var maxLabel = 0
     df.collect().foreach(row => {
       val labelD = row.getDouble(0)
       val label:Int = labelD.toInt
       val labelString:String = row.getString(2)
       assert(abs(label-labelD) < 1e-9)
       assert(abs(label-labelString.toDouble.toInt) < 1e-9)
-      assert(label==0 || label==1)
+      if(label > maxLabel) maxLabel = label
       labelArray(i) = label
       val dataA = row.getAs[SparseVector](1).toArray
       val data = new BDV[Double](dataA)
@@ -222,6 +245,7 @@ object testNN {
     dataSet.data = dataArray
     dataSet.label = labelArray
     dataSet.size = dataSize
+    dataSet.maxLabel = maxLabel
     dataSet
   }
 }
