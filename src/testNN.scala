@@ -23,7 +23,7 @@ class DataSet
   var data:Array[BDM[Double]] = null
   var label:Array[Int] = null
   var size:Int = 0
-  var maxLabel:Int = 0
+  var classNumber:Int = 0
 }
 
 object testNN {
@@ -146,7 +146,7 @@ object testNN {
     println("inputN", inputN)
     val hiddenN = inputN/2
     val batchN = 1
-    val classN = max(trainDs.maxLabel,testDs.maxLabel)+1
+    val classN = max(trainDs.classNumber,testDs.classNumber)
     val outputN = classN
 
     //create model
@@ -245,7 +245,7 @@ object testNN {
     dataSet.data = dataArray
     dataSet.label = labelArray
     dataSet.size = dataSize
-    dataSet.maxLabel = maxLabel
+    dataSet.classNumber = maxLabel + 1
     dataSet
   }
 }
